@@ -45,7 +45,10 @@ def _parse_tag(tag_id, file_):
     elif tag_id >= TAG_BYTE and tag_id <= TAG_DOUBLE:
         conversion = _numeric_conversions[tag_id]
         bytes = file_.read(conversion[1])
-        return unpack(conversion[0], bytes)[0]
+        value = unpack(conversion[0], bytes)[0]
+        if tag_id == TAG_LONG:
+            value = long(value)
+        return value
     elif tag_id == TAG_BYTE_ARRAY:
         length = _parse_tag(TAG_INT, file_)
         return file_.read(length)
@@ -80,6 +83,15 @@ def _write_tag(value, tag_id, file_):
     else:
         raise ValueError("Unknown tag type %d" % tag_id)
 
+def _format_value(type_, value, indent):
+    if type_ == TAG_COMPOUND or type_ == TAG_LIST:
+        string = value.pretty_string(indent + 3)
+    elif type_ == TAG_BYTE_ARRAY:
+        string = "[%d bytes]" % len(value)
+    else:
+        string = unicode(value)
+    return string
+
 def _guess_type(value):
     """Tries to guess the tag type of a python data type."""
     if isinstance(value, int):
@@ -111,7 +123,10 @@ class NBTCompound(dict):
 
     def __init__(self, *args, **kwargs):
         super(NBTCompound, self).__init__(*args, **kwargs)
-        self.types = {}
+        if len(args) and isinstance(args[0], NBTCompound):
+            self.types = args[0].types
+        else:
+            self.types = {}
 
     @classmethod
     def from_file(cls, file_):
@@ -128,6 +143,20 @@ class NBTCompound(dict):
             type_ = self.types.setdefault(name, _guess_type(value))
             _write_named_tag(value, type_, name, file_)
         file_.write('\0')
+
+    def __repr__(self):
+        return "%s(%s)" % (self.__class__.__name__, dict.__repr__(self))
+
+    def pretty_string(self, indent=0):
+        """Output object in pretty tree form, like the example in the spec."""
+        output = ["%d entries" % len(self), " " * indent + "{"]
+        for name, value in self.iteritems():
+            type_ = self.types.setdefault(name, _guess_type(value))
+            output.append('%s%s("%s"): %s' % (
+                " " * (indent + 3), _tag_names[type_], name,
+                _format_value(type_, value, indent)))
+        output.append(" " * indent + "}")
+        return "\n".join(output)
 
 class NBTFile(NBTCompound):
     """The top-level object that represents a parsed NBT file.
@@ -175,6 +204,10 @@ class NBTFile(NBTCompound):
         file_ = GzipFile(filename, "wb")
         self.to_file(file_)
 
+    def pretty_string(self, indent=0):
+        """Output object in pretty tree form, like the example in the spec."""
+        return '%s("%s"): %s' % (_tag_names[TAG_COMPOUND], self.name,
+                                 NBTCompound.pretty_string(self, indent))
 
 class NBTList(list):
     """Represents an NBT List object.
@@ -200,13 +233,33 @@ class NBTList(list):
 
     def to_file(self, file_):
         """Serializes the list to a file-like object."""
+        type_ = self.get_type()
+        _write_tag(type_, TAG_BYTE, file_)
+        _write_tag(len(self), TAG_INT, file_)
+        for item in self:
+            _write_tag(item, type_, file_)
+
+    def get_type(self):
         if self.type_ is None:
             if len(self):
                 self.type_ = _guess_type(self[0])
             else:
                 # Assume INT for lack of anything smarter.
                 self.type_ = TAG_INT
-        _write_tag(self.type_, TAG_BYTE, file_)
-        _write_tag(len(self), TAG_INT, file_)
-        for item in self:
-            _write_tag(item, self.type_, file_)
+        return self.type_
+
+    def __repr__(self):
+        return "%s(%s)" % (self.__class__.__name__, list.__repr__(self))
+
+    def pretty_string(self, indent=0):
+        """Output object in pretty tree form, like the example in the spec."""
+        type_ = self.get_type()
+        output = ["%d entries of type %s" %
+                    (len(self), _tag_names[type_]),
+                  " " * indent + "{"]
+        for value in self:
+            output.append('%s%s: %s' % (" " * (indent + 3), _tag_names[type_],
+                                         _format_value(type_, value, indent)))
+        output.append(" " * indent + "}")
+        return "\n".join(output)
+
