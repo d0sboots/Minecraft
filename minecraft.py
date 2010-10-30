@@ -1,6 +1,11 @@
 from struct import pack, unpack
 from gzip import GzipFile
 from cStringIO import StringIO
+import os
+
+##########################################################################
+# NBT File Format helpers and classes
+##########################################################################
 
 TAG_END = 0
 TAG_BYTE = 1
@@ -23,6 +28,7 @@ _numeric_conversions = {
     TAG_INT: (">i", 4), TAG_LONG: (">q", 8),
     TAG_FLOAT: (">f", 4), TAG_DOUBLE: (">d", 8)}
 
+# Internal helper methods for parsing and writing data
 def _parse_named_tag(file_):
     """Returns a named tag as a (value, type, name) tuple."""
     type_ = ord(file_.read(1))
@@ -39,7 +45,7 @@ def _write_named_tag(value, type_, name, file_):
     _write_tag(value, type_, file_)
 
 def _parse_tag(tag_id, file_):
-    """Helper to parse the actual data."""
+    """Helper to parse the actual data, given a tag type."""
     if tag_id == TAG_END:
         raise ValueError("Unexpected TAG_END")
     elif tag_id >= TAG_BYTE and tag_id <= TAG_DOUBLE:
@@ -63,7 +69,7 @@ def _parse_tag(tag_id, file_):
         raise ValueError("Unknown tag type %d" % tag_id)
 
 def _write_tag(value, tag_id, file_):
-    """Helper to write the actual data."""
+    """Helper to write the actual data, given a tag type."""
     if tag_id == TAG_END:
         raise ValueError("Unexpected TAG_END")
     elif tag_id >= TAG_BYTE and tag_id <= TAG_DOUBLE:
@@ -130,6 +136,7 @@ class NBTCompound(dict):
 
     @classmethod
     def from_file(cls, file_):
+        """Parse a Compound from a file-like object."""
         nbt = NBTCompound()
         while True:
             value, tag_id, name = _parse_named_tag(file_)
@@ -139,6 +146,7 @@ class NBTCompound(dict):
             nbt.types[name] = tag_id
 
     def to_file(self, file_):
+        """Serialize a Compound to a file-like object."""
         for name, value in self.iteritems():
             type_ = self.types.setdefault(name, _guess_type(value))
             _write_named_tag(value, type_, name, file_)
@@ -162,7 +170,7 @@ class NBTFile(NBTCompound):
     """The top-level object that represents a parsed NBT file.
 
     This differs from NBTCompound only in that it has a name, and additional
-    methods.
+    convenience methods.
     """
     def __init__(self, *args, **kwargs):
         super(NBTFile, self).__init__(*args, **kwargs)
@@ -240,6 +248,11 @@ class NBTList(list):
             _write_tag(item, type_, file_)
 
     def get_type(self):
+        """Get the type of this list.
+
+        If the type was not set, it guesses based on the contents of the list
+        right now.
+        """
         if self.type_ is None:
             if len(self):
                 self.type_ = _guess_type(self[0])
@@ -263,3 +276,50 @@ class NBTList(list):
         output.append(" " * indent + "}")
         return "\n".join(output)
 
+##########################################################################
+# Minecraft utility helpers and classes
+##########################################################################
+
+def base36(num):
+    digits = []
+    negative = False
+    if num < 0:
+        num = -num
+        negative = True
+    while num:
+        value = num % 36
+        if value < 10:
+            digits.append(chr(48 + value))
+        else:
+            digits.append(chr(87 + value))
+        num //= 36
+    if negative:
+        digits.append('-')
+    digits.reverse()
+    return ''.join(digits) or '0'
+
+class Level(object):
+    """A level is the root of all Minecraft Alpha level data.
+
+    Although it's possible to create the world data from scratch, currently
+    this clas requires a valid path to the world data to initialize. You can
+    write out data to a different location by changing the path before calling
+    write methods.
+
+    This class does not use the session.lock file, so be careful if Minecraft
+    is running concurrently on the same data!
+    """
+
+    def __init__(self, path):
+        """Initialize given a path to the save data.
+
+        Path usually looks like ".../.minecraft/saves/World1"
+        """
+        self.path = path
+        self.data = NBTFile.from_filename(self._leveldat_filename())
+
+    def leveldat_filename(self):
+        return os.path.join(self.path, "level.dat")
+
+    def path_to_chunk(self, x, z):
+        pass
